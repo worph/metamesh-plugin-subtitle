@@ -1,13 +1,22 @@
 /**
  * Subtitle Plugin
- * Processes subtitle files and links them to videos
+ *
+ * For subtitle files: finds sibling video files and detects language.
+ * For video files: finds sibling subtitle files.
+ *
+ * Matches old SubtitleProcessor output:
+ * - For subtitle files: videos (add CID), subtitleLanguage
+ * - For video files: subtitles (add CID)
  */
 
-import { readFile, access, readdir } from 'fs/promises';
-import { dirname, basename, extname, join } from 'path';
+import { readFile, access, open } from 'fs/promises';
+import { dirname, extname } from 'path';
 import { franc } from 'franc-min';
+import { FileType, getSiblingFiles } from '@metazla/filename-tools';
 import type { PluginManifest, ProcessRequest, CallbackPayload } from './types.js';
 import { MetaCoreClient } from './meta-core-client.js';
+
+const fileType = new FileType();
 
 export const manifest: PluginManifest = {
     id: 'subtitle',
@@ -28,15 +37,26 @@ export const manifest: PluginManifest = {
     config: {},
 };
 
-const VIDEO_EXTENSIONS = new Set(['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v']);
-const SUBTITLE_EXTENSIONS = new Set(['srt', 'ass', 'ssa', 'vtt', 'sub']);
-
 async function fileExists(path: string): Promise<boolean> {
     try {
         await access(path);
         return true;
     } catch {
         return false;
+    }
+}
+
+/**
+ * Read first N bytes of a file
+ */
+async function readFirstData(filePath: string, encoding: BufferEncoding = 'utf8', size = 1024): Promise<string> {
+    const handle = await open(filePath, 'r');
+    try {
+        const buffer = Buffer.alloc(size);
+        await handle.read(buffer, 0, size, 0);
+        return buffer.toString(encoding);
+    } finally {
+        await handle.close();
     }
 }
 
@@ -49,49 +69,12 @@ export async function process(
 
     try {
         const { cid, filePath, existingMeta } = request;
-        const fileType = existingMeta?.fileType;
+        const currentFileType = existingMeta?.fileType;
 
-        if (fileType === 'subtitle') {
-            // For subtitle files: detect language and find sibling videos
-            try {
-                const content = await readFile(filePath, { encoding: 'utf8', flag: 'r' });
-                const sample = content.slice(0, 4096);
-                const lang = franc(sample);
-                if (lang && lang !== 'und') {
-                    await metaCore.setProperty(cid, 'subtitleLanguage', lang);
-                }
-            } catch {
-                // Ignore read errors
-            }
-
-            // Find sibling videos
-            const dir = dirname(filePath);
-            const baseName = basename(filePath, extname(filePath));
-            try {
-                const files = await readdir(dir);
-                for (const file of files) {
-                    const ext = extname(file).slice(1).toLowerCase();
-                    if (VIDEO_EXTENSIONS.has(ext)) {
-                        const videoBase = basename(file, extname(file));
-                        // Check if video name matches subtitle base name
-                        if (videoBase === baseName || baseName.startsWith(videoBase)) {
-                            // We don't have CID for sibling, just note the relationship
-                            await metaCore.setProperty(cid, 'linkedVideoName', file);
-                        }
-                    }
-                }
-            } catch {
-                // Ignore directory read errors
-            }
-        } else if (fileType === 'video') {
-            // For video files: find sibling subtitles
-            const extension = existingMeta?.extension || '';
-            for (const subExt of ['srt', 'ass', 'ssa', 'vtt']) {
-                const subPath = filePath.replace(new RegExp(`\\.${extension}$`, 'i'), `.${subExt}`);
-                if (await fileExists(subPath)) {
-                    await metaCore.setProperty(cid, `subtitleFile/${subExt}`, basename(subPath));
-                }
-            }
+        if (currentFileType === 'subtitle') {
+            await processSubtitleFile(metaCore, cid, filePath);
+        } else if (currentFileType === 'video') {
+            await processVideoFile(metaCore, cid, filePath, existingMeta);
         }
 
         await sendCallback({
@@ -106,5 +89,79 @@ export async function process(
             duration: Date.now() - startTime,
             error: error instanceof Error ? error.message : String(error),
         });
+    }
+}
+
+/**
+ * Process subtitle file: find sibling videos and detect language
+ */
+async function processSubtitleFile(
+    metaCore: MetaCoreClient,
+    cid: string,
+    filePath: string
+): Promise<void> {
+    try {
+        // Find sibling video files
+        const siblings = await getSiblingFiles(filePath);
+
+        for (const siblingPath of siblings) {
+            const siblingType = fileType.getFileTypeFromExtension(siblingPath);
+            if (siblingType === 'video') {
+                try {
+                    const videoCid = await metaCore.computeFileCID(siblingPath);
+                    if (videoCid) {
+                        await metaCore.addToSet(cid, 'videos', videoCid);
+                    }
+                } catch (e) {
+                    console.debug(`[subtitle] Could not get CID for video: ${siblingPath}`);
+                }
+            }
+        }
+
+        // Detect subtitle language by reading first 4KB
+        try {
+            const content = await readFirstData(filePath, 'utf8', 4096);
+            const detectedLang = franc(content);
+            if (detectedLang && detectedLang !== 'und') {
+                await metaCore.setProperty(cid, 'subtitleLanguage', detectedLang);
+            }
+        } catch (e) {
+            console.debug(`[subtitle] Could not detect language for: ${filePath}`);
+        }
+
+        console.log(`[subtitle] Processed subtitle file: ${filePath}`);
+    } catch (error) {
+        console.error(`[subtitle] Error processing subtitle file ${filePath}:`, error);
+    }
+}
+
+/**
+ * Process video file: find sibling subtitle files
+ */
+async function processVideoFile(
+    metaCore: MetaCoreClient,
+    cid: string,
+    filePath: string,
+    existingMeta?: Record<string, string>
+): Promise<void> {
+    try {
+        const extension = existingMeta?.extension || '';
+        const srtPath = filePath.replace(new RegExp(`\\.${extension}$`, 'i'), '.srt');
+
+        // Check for .srt subtitle
+        if (await fileExists(srtPath)) {
+            try {
+                const subtitleCid = await metaCore.computeFileCID(srtPath);
+                if (subtitleCid) {
+                    await metaCore.addToSet(cid, 'subtitles', subtitleCid);
+                }
+            } catch (e) {
+                console.debug(`[subtitle] Could not get CID for subtitle: ${srtPath}`);
+            }
+        }
+
+        console.log(`[subtitle] Checked subtitles for video: ${filePath}`);
+    } catch (error) {
+        console.error(`[subtitle] Error finding subtitles for ${filePath}:`, error);
     }
 }

@@ -70,4 +70,24 @@ export class MetaCoreClient {
         const data = await response.json() as { metadata?: Record<string, string> };
         return data.metadata ?? {};
     }
+
+    /**
+     * Compute the CID (Content Identifier) for a file
+     * Uses the meta-core /file/cid API endpoint
+     */
+    async computeFileCID(filePath: string): Promise<string | null> {
+        try {
+            const response = await this.safeFetch(`${this.baseUrl}/file/cid`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: filePath }),
+            });
+            if (!response || !response.ok) return null;
+            const data = await response.json() as { cid?: string };
+            return data.cid ?? null;
+        } catch (error) {
+            console.debug(`[MetaCoreClient] Failed to compute CID for ${filePath}:`, error);
+            return null;
+        }
+    }
 }
