@@ -15,6 +15,15 @@ import { franc } from 'franc-min';
 import { FileType, getSiblingFiles } from '@metazla/filename-tools';
 import type { PluginManifest, ProcessRequest, CallbackPayload } from './types.js';
 import { MetaCoreClient } from './meta-core-client.js';
+import { createWebDAVClient, WebDAVClient } from './webdav-client.js';
+
+// Initialize WebDAV client if WEBDAV_URL is set
+const webdavClient = createWebDAVClient();
+if (webdavClient) {
+    console.log('[subtitle] Using WebDAV for file access');
+} else {
+    console.log('[subtitle] Using direct filesystem access');
+}
 
 const fileType = new FileType();
 
@@ -38,6 +47,9 @@ export const manifest: PluginManifest = {
 };
 
 async function fileExists(path: string): Promise<boolean> {
+    if (webdavClient) {
+        return webdavClient.exists(path);
+    }
     try {
         await access(path);
         return true;
@@ -50,6 +62,10 @@ async function fileExists(path: string): Promise<boolean> {
  * Read first N bytes of a file
  */
 async function readFirstData(filePath: string, encoding: BufferEncoding = 'utf8', size = 1024): Promise<string> {
+    if (webdavClient) {
+        const buffer = await webdavClient.readBytes(filePath, 0, size - 1);
+        return buffer.toString(encoding);
+    }
     const handle = await open(filePath, 'r');
     try {
         const buffer = Buffer.alloc(size);
@@ -129,7 +145,8 @@ async function processSubtitleFile(
             console.debug(`[subtitle] Could not detect language for: ${filePath}`);
         }
 
-        console.log(`[subtitle] Processed subtitle file: ${filePath}`);
+        const mode = webdavClient ? 'WebDAV' : 'filesystem';
+        console.log(`[subtitle] Processed subtitle file: ${filePath} (${mode})`);
     } catch (error) {
         console.error(`[subtitle] Error processing subtitle file ${filePath}:`, error);
     }
