@@ -1,6 +1,7 @@
 {
   "name": "@metazla/plugin-subtitle",
   "version": "1.0.0",
+  "packageManager": "pnpm@10.28.0",
   "description": "MetaMesh plugin: Processes subtitle files and links",
   "type": "module",
   "main": "dist/index.js",
