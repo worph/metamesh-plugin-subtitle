@@ -44,7 +44,9 @@ export interface ProcessRequest {
     filePath: string;
     callbackUrl: string;
     metaCoreUrl: string;
-    existingMeta?: Record<string, string>;
+    // meta-sort sends its NESTED /meta document (`fileinfo: {...}`, `stream: [...]`);
+    // meta-core serves the flat `a/b` form. Top-level scalars match in both.
+    existingMeta?: Record<string, unknown>;
 }
 
 export interface ProcessResponse {

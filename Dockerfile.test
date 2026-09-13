@@ -1,0 +1,30 @@
+# MetaMesh Plugin: subtitle - Test Image
+# Builds the plugin and runs its tests (no ffmpeg needed: WebDAV and the meta
+# API are faked in-process)
+
+FROM node:20-slim
+
+# git for the GitHub dependency (filename-tools)
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+RUN npm install -g corepack@latest && corepack enable
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml ./
+RUN corepack install
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
+
+# Build the git dependency (filename-tools), as the production Dockerfile does
+RUN cd node_modules/@metazla/filename-tools && pnpm install && pnpm run build
+
+COPY tsconfig.json vitest.config.ts ./
+COPY src/ ./src/
+COPY test/ ./test/
+RUN pnpm run build
+
+ENV NODE_ENV=test
+
+CMD ["pnpm", "test"]

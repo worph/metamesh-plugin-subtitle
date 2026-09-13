@@ -1,6 +1,10 @@
 /**
- * meta-core API Client for writing metadata
- * Fails gracefully if meta-core is unavailable (logs warning, returns without throwing)
+ * meta-core API client for writing metadata.
+ *
+ * Writes report success so a failed write fails the task instead of being
+ * swallowed. Key-sets are written as individual `prefix/member = "true"`
+ * fields through PATCH — never via `_add`, which stores one comma-joined
+ * string and can never produce the key-set shape.
  */
 
 export class MetaCoreClient {
@@ -8,86 +12,57 @@ export class MetaCoreClient {
 
     private async safeFetch(url: string, options: RequestInit): Promise<Response | null> {
         try {
-            return await fetch(url, { ...options, signal: AbortSignal.timeout(5000) });
+            return await fetch(url, { ...options, signal: AbortSignal.timeout(10000) });
         } catch (error) {
-            console.warn(`[MetaCoreClient] Warning: meta-core unavailable at ${this.baseUrl}`);
+            console.warn(`[MetaCoreClient] Warning: meta-core unavailable at ${this.baseUrl}: ${error instanceof Error ? error.message : String(error)}`);
             return null;
-        }
-    }
-
-    async setProperty(hashId: string, key: string, value: string): Promise<void> {
-        const response = await this.safeFetch(`${this.baseUrl}/meta/${hashId}/${key}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ value }),
-        });
-        if (response && !response.ok) {
-            console.warn(`[MetaCoreClient] Failed to set property: ${response.status}`);
         }
     }
 
     async getProperty(hashId: string, key: string): Promise<string | null> {
         const response = await this.safeFetch(`${this.baseUrl}/meta/${hashId}/${key}`, { method: 'GET' });
-        if (!response || response.status === 404) return null;
-        if (!response.ok) return null;
-        const data = await response.json() as { value?: string };
-        return data.value ?? null;
+        if (!response || !response.ok) return null;
+        const data = await response.json() as { value?: unknown };
+        return data.value === undefined || data.value === null ? null : String(data.value);
     }
 
-    async mergeMetadata(hashId: string, metadata: Record<string, string>): Promise<void> {
+    /**
+     * Whole record, in whatever form the endpoint serves (meta-sort's /meta is
+     * nested, meta-core's is flat) — callers flatten. `null` when the call
+     * itself failed, `{}` when the record does not exist.
+     */
+    async getMetadata(hashId: string): Promise<Record<string, unknown> | null> {
+        const response = await this.safeFetch(`${this.baseUrl}/meta/${hashId}`, { method: 'GET' });
+        if (!response) return null;
+        if (response.status === 404) return {};
+        if (!response.ok) return null;
+        const data = await response.json() as { metadata?: Record<string, unknown> };
+        return data.metadata ?? {};
+    }
+
+    /** PATCH — merge `metadata` into the record. True on success. */
+    async mergeMetadata(hashId: string, metadata: Record<string, string>): Promise<boolean> {
         const response = await this.safeFetch(`${this.baseUrl}/meta/${hashId}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(metadata),
         });
-        if (response && !response.ok) {
-            console.warn(`[MetaCoreClient] Failed to merge metadata: ${response.status}`);
+        if (!response) return false;
+        if (!response.ok) {
+            console.warn(`[MetaCoreClient] Failed to merge metadata into ${hashId}: ${response.status}`);
+            return false;
         }
+        return true;
     }
 
-    async deleteProperty(hashId: string, key: string): Promise<void> {
+    /** DELETE one field. A missing field counts as deleted. */
+    async deleteProperty(hashId: string, key: string): Promise<boolean> {
         const response = await this.safeFetch(`${this.baseUrl}/meta/${hashId}/${key}`, { method: 'DELETE' });
-        if (response && !response.ok && response.status !== 404) {
-            console.warn(`[MetaCoreClient] Failed to delete property: ${response.status}`);
+        if (!response) return false;
+        if (!response.ok && response.status !== 404) {
+            console.warn(`[MetaCoreClient] Failed to delete ${hashId}/${key}: ${response.status}`);
+            return false;
         }
-    }
-
-    async addToSet(hashId: string, key: string, value: string): Promise<void> {
-        const response = await this.safeFetch(`${this.baseUrl}/meta/${hashId}/_add/${key}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ value }),
-        });
-        if (response && !response.ok) {
-            console.warn(`[MetaCoreClient] Failed to add to set: ${response.status}`);
-        }
-    }
-
-    async getMetadata(hashId: string): Promise<Record<string, string>> {
-        const response = await this.safeFetch(`${this.baseUrl}/meta/${hashId}`, { method: 'GET' });
-        if (!response || response.status === 404) return {};
-        if (!response.ok) return {};
-        const data = await response.json() as { metadata?: Record<string, string> };
-        return data.metadata ?? {};
-    }
-
-    /**
-     * Compute the CID (Content Identifier) for a file
-     * Uses the meta-core /file/cid API endpoint
-     */
-    async computeFileCID(filePath: string): Promise<string | null> {
-        try {
-            const response = await this.safeFetch(`${this.baseUrl}/file/cid`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: filePath }),
-            });
-            if (!response || !response.ok) return null;
-            const data = await response.json() as { cid?: string };
-            return data.cid ?? null;
-        } catch (error) {
-            console.debug(`[MetaCoreClient] Failed to compute CID for ${filePath}:`, error);
-            return null;
-        }
+        return true;
     }
 }
