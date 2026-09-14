@@ -242,9 +242,22 @@ export async function midhashOverWebDAV(client: WebDAVClient, filePath: string, 
 // Record keys
 // ----------------------------------------------------------------------------
 
+/**
+ * Keys on the video record for one linked subtitle (METADATA_KEYS.md §8, §9).
+ *
+ * The language lands in `subtitleLanguages/<lang3>` **and** in the
+ * `languages/<lang3>` union — §9 rule #7: "a union field is written, never
+ * computed". Nothing reconciles them afterwards, and `languages` is the only
+ * field a query filters on, so a subtitle language recorded in the split alone
+ * is invisible to every language filter on every peer. This mirrors
+ * subtitle-extractor's `videoSubtitleKeys`, which has always written both.
+ */
 export function videoSubtitleKeys(subCid: string, lang3: string): Record<string, string> {
     const keys: Record<string, string> = { [`subtitles/${lang3}/${subCid}`]: 'true' };
-    if (lang3 !== 'und') keys[`subtitleLanguages/${lang3}`] = 'true';
+    if (lang3 !== 'und') {
+        keys[`subtitleLanguages/${lang3}`] = 'true';
+        keys[`languages/${lang3}`] = 'true';
+    }
     return keys;
 }
 
@@ -299,7 +312,13 @@ async function writeVideoLinks(
         deletes.push('subtitleLanguages');
         for (const code of legacyLangs) {
             const l = languageToken(code);
-            if (l && l !== 'und') sets[`subtitleLanguages/${l}`] = 'true';
+            if (l && l !== 'und') {
+                sets[`subtitleLanguages/${l}`] = 'true';
+                // The legacy csv never had a union member to migrate, so the
+                // migration is also the only chance to satisfy §9 rule #7 for
+                // these records.
+                sets[`languages/${l}`] = 'true';
+            }
         }
     }
     for (const { subCid, lang3 } of links) deletes.push(...staleLanguageLeaves(flat, 'subtitles', subCid, lang3));

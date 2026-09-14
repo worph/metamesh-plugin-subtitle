@@ -220,8 +220,15 @@ describe('midhash256', () => {
 });
 
 describe('record keys (METADATA_KEYS.md §8)', () => {
-    it('video: language-nested leaf, plus the facet for a known language', () => {
-        expect(videoSubtitleKeys('bagsub', 'fre')).toEqual({ 'subtitles/fre/bagsub': 'true', 'subtitleLanguages/fre': 'true' });
+    it('video: language-nested leaf, plus the facet AND the union for a known language', () => {
+        // §9 rule #7 — the split never travels without the union, because
+        // `languages` is the only field a query filters on.
+        expect(videoSubtitleKeys('bagsub', 'fre')).toEqual({
+            'subtitles/fre/bagsub': 'true',
+            'subtitleLanguages/fre': 'true',
+            'languages/fre': 'true',
+        });
+        // `und` is never a member of either set (§9).
         expect(videoSubtitleKeys('bagsub', 'und')).toEqual({ 'subtitles/und/bagsub': 'true' });
     });
 
